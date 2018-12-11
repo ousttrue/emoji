@@ -1,0 +1,4 @@
+{
+    "cmake.cmakePath": "cmake.bat",
+    "C_Cpp.default.configurationProvider": "vector-of-bool.cmake-tools",
+}
