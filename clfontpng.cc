@@ -70,13 +70,6 @@ class Image
 
     bool Output()
     {
-        /*
-        PngWriter writer(kDefaultOutputFile);
-        return writer.Write(draw_context_.Bitmap(),
-                            draw_context_.Width(),
-                            draw_context_.Height());
-        */
-
         std::ofstream io("out.ppm", std::ios::binary);
         io << "P6\n";
         io << Width() << " " << Height() << "\n";
@@ -141,25 +134,22 @@ class Image
     void Advance(int dx) { pos_ += dx; }
 };
 
-struct FaceOptions
-{
-    int pixel_size;
-    int load_flags;
-    FT_Render_Mode render_mode;
-    FaceOptions()
-        : pixel_size(kDefaultPixelSize), load_flags(0), render_mode(FT_RENDER_MODE_NORMAL) {}
-};
-
 class FreeTypeFace
 {
+    std::string font_file_;
+    int pixel_size = kDefaultPixelSize;
+    int load_flags = 0;
+    FT_Render_Mode render_mode = FT_RENDER_MODE_NORMAL;
+    FT_Face face_ = nullptr;
+    int error_;
+
   public:
     FreeTypeFace(const std::string &font_file)
-        : font_file_(font_file), options_(), face_(nullptr)
+        : font_file_(font_file)
     {
         error_ = FT_New_Face(gFtLibrary, font_file_.c_str(), 0, &face_);
         if (error_)
         {
-            face_ = nullptr;
             return;
         }
         if (IsColorEmojiFont())
@@ -171,11 +161,6 @@ class FreeTypeFace
     {
         if (face_)
             FT_Done_Face(face_);
-    }
-    FreeTypeFace(FreeTypeFace &&rhs)
-        : font_file_(rhs.font_file_), options_(rhs.options_), face_(rhs.face_), error_(rhs.error_)
-    {
-        rhs.face_ = nullptr;
     }
     bool CalculateBox(uint32_t codepoint, uint32_t &width, uint32_t &height)
     {
@@ -208,10 +193,10 @@ class FreeTypeFace
         uint32_t glyph_index = FT_Get_Char_Index(face_, codepoint);
         if (glyph_index == 0)
             return false;
-        error_ = FT_Load_Glyph(face_, glyph_index, options_.load_flags);
+        error_ = FT_Load_Glyph(face_, glyph_index, load_flags);
         if (error_)
             return false;
-        error_ = FT_Render_Glyph(face_->glyph, options_.render_mode);
+        error_ = FT_Render_Glyph(face_->glyph, render_mode);
         if (error_)
             return false;
         return true;
@@ -230,20 +215,20 @@ class FreeTypeFace
     }
     void SetupNormalFont()
     {
-        error_ = FT_Set_Pixel_Sizes(face_, 0, options_.pixel_size);
+        error_ = FT_Set_Pixel_Sizes(face_, 0, pixel_size);
     }
     void SetupColorFont()
     {
-        options_.load_flags |= FT_LOAD_COLOR;
+        load_flags |= FT_LOAD_COLOR;
 
         if (face_->num_fixed_sizes == 0)
             return;
         int best_match = 0;
-        int diff = std::abs(options_.pixel_size - face_->available_sizes[0].width);
+        int diff = std::abs(pixel_size - face_->available_sizes[0].width);
         for (int i = 1; i < face_->num_fixed_sizes; ++i)
         {
             int ndiff =
-                std::abs(options_.pixel_size - face_->available_sizes[i].width);
+                std::abs(pixel_size - face_->available_sizes[i].width);
             if (ndiff < diff)
             {
                 best_match = i;
@@ -252,11 +237,6 @@ class FreeTypeFace
         }
         error_ = FT_Select_Size(face_, best_match);
     }
-
-    std::string font_file_;
-    FaceOptions options_;
-    FT_Face face_;
-    int error_;
 };
 
 class FontList
