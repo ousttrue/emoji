@@ -35,24 +35,66 @@ const int kSpaceWidth = kDefaultPixelSize / 2;
 
 FT_Library gFtLibrary;
 
-// Only support horizontal direction.
-class DrawContext
+class Image
 {
+    uint32_t pos_ = 0;
+    uint32_t width_ = 0;
+    uint32_t height_ = 0;
+    std::vector<uint8_t> bitmap_;
+
+    Image(int w, int h)
+        : width_(w), height_(h), bitmap_(w * h * kBytesPerPixel)
+    {
+    }
+
   public:
-    DrawContext()
-        : pos_(0), width_(0), height_(0) {}
+    static std::shared_ptr<Image> Create(int w, int h)
+    {
+        return std::shared_ptr<Image>(new Image(w, h));
+    }
+
     uint8_t *Bitmap() { return &bitmap_[0]; }
     const uint32_t Width() const { return width_; }
     const uint32_t Height() const { return height_; }
-    void SetSize(int width, int height)
+
+    bool DrawBitmap(FT_GlyphSlot slot)
     {
-        width_ = width;
-        height_ = height;
-        int size = width * height * kBytesPerPixel;
-        bitmap_.resize(size);
-        bitmap_.assign(size, 0x00);
+        int pixel_mode = slot->bitmap.pixel_mode;
+        if (pixel_mode == FT_PIXEL_MODE_BGRA)
+            DrawColorBitmap(slot);
+        else
+            DrawNormalBitmap(slot);
+        Advance(slot->advance.x >> 6);
+        return true;
     }
-    void Advance(int dx) { pos_ += dx; }
+
+    bool Output()
+    {
+        /*
+        PngWriter writer(kDefaultOutputFile);
+        return writer.Write(draw_context_.Bitmap(),
+                            draw_context_.Width(),
+                            draw_context_.Height());
+        */
+
+        std::ofstream io("out.ppm", std::ios::binary);
+        io << "P6\n";
+        io << Width() << " " << Height() << "\n";
+        io << "255\n";
+
+        auto p = (const char *)Bitmap();
+        for (int y = 0; y < Height(); ++y)
+        {
+            for (int x = 0; x < Width(); ++x, p += 4)
+            {
+                io.write(p, 3);
+            }
+        }
+
+        return true;
+    }
+
+  private:
     uint8_t *GetDrawPosition(int row)
     {
         uint32_t index = (row * width_ + pos_) * kBytesPerPixel;
@@ -60,14 +102,43 @@ class DrawContext
         return &bitmap_[index];
     }
 
-  private:
-    DrawContext(const DrawContext &) = delete;
-    DrawContext &operator=(const DrawContext &) = delete;
-
-    uint32_t pos_;
-    uint32_t width_;
-    uint32_t height_;
-    std::vector<uint8_t> bitmap_;
+    void DrawColorBitmap(FT_GlyphSlot slot)
+    {
+        uint8_t *src = slot->bitmap.buffer;
+        // FIXME: Should use metrics for drawing. (e.g. calculate baseline)
+        int yoffset = Height() - slot->bitmap.rows;
+        for (int y = 0; y < slot->bitmap.rows; ++y)
+        {
+            uint8_t *dest = GetDrawPosition(y + yoffset);
+            for (int x = 0; x < slot->bitmap.width; ++x)
+            {
+                uint8_t b = *src++, g = *src++, r = *src++, a = *src++;
+                *dest++ = r;
+                *dest++ = g;
+                *dest++ = b;
+                *dest++ = a;
+            }
+        }
+    }
+    void DrawNormalBitmap(FT_GlyphSlot slot)
+    {
+        uint8_t *src = slot->bitmap.buffer;
+        // FIXME: Same as DrawColorBitmap()
+        int yoffset = Height() - slot->bitmap.rows;
+        for (int y = 0; y < slot->bitmap.rows; ++y)
+        {
+            uint8_t *dest = GetDrawPosition(y + yoffset);
+            for (int x = 0; x < slot->bitmap.width; ++x)
+            {
+                *dest++ = 255 - *src;
+                *dest++ = 255 - *src;
+                *dest++ = 255 - *src;
+                *dest++ = *src; // Alpha
+                ++src;
+            }
+        }
+    }
+    void Advance(int dx) { pos_ += dx; }
 };
 
 struct FaceOptions
@@ -115,13 +186,15 @@ class FreeTypeFace
             height, static_cast<uint32_t>(face_->glyph->metrics.height >> 6));
         return true;
     }
-    bool DrawCodepoint(DrawContext &context, uint32_t codepoint)
+
+    bool DrawCodepoint(const std::shared_ptr<Image> &context, uint32_t codepoint)
     {
         if (!RenderGlyph(codepoint))
             return false;
-        printf("U+%08X -> %s\n", codepoint, font_file_.c_str());
-        return DrawBitmap(context, face_->glyph);
+        //printf("U+%08X -> %s\n", codepoint, font_file_.c_str());
+        return context->DrawBitmap(face_->glyph);
     }
+
     int Error() const { return error_; }
 
   private:
@@ -179,52 +252,6 @@ class FreeTypeFace
         }
         error_ = FT_Select_Size(face_, best_match);
     }
-    bool DrawBitmap(DrawContext &context, FT_GlyphSlot slot)
-    {
-        int pixel_mode = slot->bitmap.pixel_mode;
-        if (pixel_mode == FT_PIXEL_MODE_BGRA)
-            DrawColorBitmap(context, slot);
-        else
-            DrawNormalBitmap(context, slot);
-        context.Advance(slot->advance.x >> 6);
-        return true;
-    }
-    void DrawColorBitmap(DrawContext &context, FT_GlyphSlot slot)
-    {
-        uint8_t *src = slot->bitmap.buffer;
-        // FIXME: Should use metrics for drawing. (e.g. calculate baseline)
-        int yoffset = context.Height() - slot->bitmap.rows;
-        for (int y = 0; y < slot->bitmap.rows; ++y)
-        {
-            uint8_t *dest = context.GetDrawPosition(y + yoffset);
-            for (int x = 0; x < slot->bitmap.width; ++x)
-            {
-                uint8_t b = *src++, g = *src++, r = *src++, a = *src++;
-                *dest++ = r;
-                *dest++ = g;
-                *dest++ = b;
-                *dest++ = a;
-            }
-        }
-    }
-    void DrawNormalBitmap(DrawContext &context, FT_GlyphSlot slot)
-    {
-        uint8_t *src = slot->bitmap.buffer;
-        // FIXME: Same as DrawColorBitmap()
-        int yoffset = context.Height() - slot->bitmap.rows;
-        for (int y = 0; y < slot->bitmap.rows; ++y)
-        {
-            uint8_t *dest = context.GetDrawPosition(y + yoffset);
-            for (int x = 0; x < slot->bitmap.width; ++x)
-            {
-                *dest++ = 255 - *src;
-                *dest++ = 255 - *src;
-                *dest++ = 255 - *src;
-                *dest++ = *src; // Alpha
-                ++src;
-            }
-        }
-    }
 
     std::string font_file_;
     FaceOptions options_;
@@ -260,7 +287,7 @@ class FontList
             }
         }
     }
-    void DrawCodepoint(DrawContext &context, uint32_t codepoint)
+    void DrawCodepoint(std::shared_ptr<Image> &context, uint32_t codepoint)
     {
         for (auto &face : face_list_)
         {
@@ -276,106 +303,6 @@ class FontList
     FaceList face_list_;
 };
 
-class PngWriter
-{
-  public:
-    PngWriter(const std::string &outfile)
-        : outfile_(outfile), png_(nullptr), info_(nullptr)
-    {
-        fp_ = fopen(outfile_.c_str(), "wb");
-        if (!fp_)
-        {
-            std::cerr << "Failed to open: " << outfile_ << std::endl;
-            Cleanup();
-            return;
-        }
-        png_ = png_create_write_struct(
-            PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
-        if (!png_)
-        {
-            std::cerr << "Failed to create PNG file" << std::endl;
-            Cleanup();
-            return;
-        }
-        info_ = png_create_info_struct(png_);
-        if (!info_)
-        {
-            std::cerr << "Failed to create PNG file" << std::endl;
-            Cleanup();
-            return;
-        }
-    }
-    ~PngWriter() { Cleanup(); }
-    bool Write(uint8_t *rgba, int width, int height)
-    {
-        static const int kDepth = 8;
-        if (!png_)
-        {
-            std::cerr << "Writer is not initialized" << std::endl;
-            return false;
-        }
-        if (setjmp(png_jmpbuf(png_)))
-        {
-            std::cerr << "Failed to write PNG" << std::endl;
-            Cleanup();
-            return false;
-        }
-        png_set_IHDR(png_, info_, width, height, kDepth,
-                     PNG_COLOR_TYPE_RGB_ALPHA, PNG_INTERLACE_NONE,
-                     PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-        png_init_io(png_, fp_);
-        png_byte **row_pointers =
-            static_cast<png_byte **>(png_malloc(png_, height * sizeof(png_byte *)));
-        uint8_t *src = rgba;
-        for (int y = 0; y < height; ++y)
-        {
-            png_byte *row =
-                static_cast<png_byte *>(png_malloc(png_, width * kBytesPerPixel));
-            row_pointers[y] = row;
-            for (int x = 0; x < width; ++x)
-            {
-                *row++ = *src++;
-                *row++ = *src++;
-                *row++ = *src++;
-                *row++ = *src++;
-            }
-            assert(row - row_pointers[y] == width * kBytesPerPixel);
-        }
-        assert(src - rgba == width * height * kBytesPerPixel);
-        png_set_rows(png_, info_, row_pointers);
-        png_write_png(png_, info_, PNG_TRANSFORM_IDENTITY, 0);
-        for (int y = 0; y < height; y++)
-            png_free(png_, row_pointers[y]);
-        png_free(png_, row_pointers);
-        Cleanup();
-        return true;
-    }
-
-  private:
-    PngWriter(const PngWriter &) = delete;
-    PngWriter operator=(const PngWriter &) = delete;
-    void Cleanup()
-    {
-        if (fp_)
-        {
-            fclose(fp_);
-        }
-        if (png_)
-            png_destroy_write_struct(&png_, &info_);
-        fp_ = nullptr;
-        png_ = nullptr;
-        info_ = nullptr;
-    }
-
-    std::string outfile_;
-    FILE *fp_;
-    png_structp png_;
-    png_infop info_;
-    char *rgba_;
-    uint32_t width_;
-    uint32_t height_;
-};
-
 class App
 {
   public:
@@ -383,9 +310,9 @@ class App
     bool SetText(const char *text) { return UTF8ToCodepoint(text); }
     bool Execute()
     {
-        CalculateImageSize();
+        draw_context_ = CalculateImageSize();
         Draw();
-        return Output();
+        return draw_context_->Output();
     }
 
   private:
@@ -406,48 +333,23 @@ class App
         }
         return true;
     }
-    void CalculateImageSize()
+    std::shared_ptr<Image> CalculateImageSize()
     {
         uint32_t width = 0, height = 0;
         for (auto c : codepoints_)
             font_list_.CalculateBox(c, width, height);
         printf("width: %u, height: %u\n", width, height);
-        draw_context_.SetSize(width, height);
+        return Image::Create(width, height);
     }
     void Draw()
     {
         for (auto c : codepoints_)
             font_list_.DrawCodepoint(draw_context_, c);
     }
-    bool Output()
-    {
-        /*
-        PngWriter writer(kDefaultOutputFile);
-        return writer.Write(draw_context_.Bitmap(),
-                            draw_context_.Width(),
-                            draw_context_.Height());
-        */
-
-        std::ofstream io("out.ppm", std::ios::binary);
-        io << "P6\n";
-        io << draw_context_.Width() << " " << draw_context_.Height() << "\n";
-        io << "255\n";
-
-        auto p = (const char *)draw_context_.Bitmap();
-        for (int y = 0; y < draw_context_.Height(); ++y)
-        {
-            for (int x = 0; x < draw_context_.Width(); ++x, p += 4)
-            {
-                io.write(p, 3);
-            }
-        }
-
-        return true;
-    }
 
     std::vector<uint32_t> codepoints_;
     FontList font_list_;
-    DrawContext draw_context_;
+    std::shared_ptr<Image> draw_context_;
 };
 
 bool Init()
