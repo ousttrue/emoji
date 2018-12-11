@@ -76,9 +76,9 @@ class Image
         io << "255\n";
 
         auto p = (const char *)Bitmap();
-        for (int y = 0; y < Height(); ++y)
+        for (uint32_t y = 0; y < Height(); ++y)
         {
-            for (int x = 0; x < Width(); ++x, p += 4)
+            for (uint32_t x = 0; x < Width(); ++x, p += 4)
             {
                 io.write(p, 3);
             }
@@ -100,10 +100,10 @@ class Image
         uint8_t *src = slot->bitmap.buffer;
         // FIXME: Should use metrics for drawing. (e.g. calculate baseline)
         int yoffset = Height() - slot->bitmap.rows;
-        for (int y = 0; y < slot->bitmap.rows; ++y)
+        for (uint32_t y = 0; y < slot->bitmap.rows; ++y)
         {
             uint8_t *dest = GetDrawPosition(y + yoffset);
-            for (int x = 0; x < slot->bitmap.width; ++x)
+            for (uint32_t x = 0; x < slot->bitmap.width; ++x)
             {
                 uint8_t b = *src++, g = *src++, r = *src++, a = *src++;
                 *dest++ = r;
@@ -118,10 +118,10 @@ class Image
         uint8_t *src = slot->bitmap.buffer;
         // FIXME: Same as DrawColorBitmap()
         int yoffset = Height() - slot->bitmap.rows;
-        for (int y = 0; y < slot->bitmap.rows; ++y)
+        for (uint32_t y = 0; y < slot->bitmap.rows; ++y)
         {
             uint8_t *dest = GetDrawPosition(y + yoffset);
-            for (int x = 0; x < slot->bitmap.width; ++x)
+            for (uint32_t x = 0; x < slot->bitmap.width; ++x)
             {
                 *dest++ = 255 - *src;
                 *dest++ = 255 - *src;
@@ -283,105 +283,67 @@ class FontList
     FaceList face_list_;
 };
 
-class App
+static std::vector<uint32_t> UTF8ToCodepoint(const std::string &_text)
 {
-  public:
-    void AddFont(const std::string &font_file) { font_list_.AddFont(font_file); }
-    bool SetText(const char *text) { return UTF8ToCodepoint(text); }
-    bool Execute()
+    std::vector<uint32_t> codepoints;
+    auto text = _text.c_str();
+    int i = 0;
+    auto length = _text.size();
+    while (i < length)
     {
-        draw_context_ = CalculateImageSize();
-        Draw();
-        return draw_context_->Output();
-    }
-
-  private:
-    bool UTF8ToCodepoint(const std::string &_text)
-    {
-        auto text = _text.c_str();
-        int32_t i = 0, length = strlen(text), c;
-        while (i < length)
+        int c;
+        U8_NEXT(text, i, length, c);
+        if (c < 0)
         {
-            U8_NEXT(text, i, length, c);
-            if (c < 0)
-            {
-                std::cerr << "Invalid input text" << std::endl;
-                return false;
-            }
-            //codepoints_.push_back(0x231B);
-            codepoints_.push_back(c);
+            std::cerr << "Invalid input text" << std::endl;
+            std::exit(2);
         }
-        return true;
+        codepoints.push_back(c);
     }
-    std::shared_ptr<Image> CalculateImageSize()
-    {
-        uint32_t width = 0, height = 0;
-        for (auto c : codepoints_)
-            font_list_.CalculateBox(c, width, height);
-        printf("width: %u, height: %u\n", width, height);
-        return Image::Create(width, height);
-    }
-    void Draw()
-    {
-        for (auto c : codepoints_)
-            font_list_.DrawCodepoint(draw_context_, c);
-    }
-
-    std::vector<uint32_t> codepoints_;
-    FontList font_list_;
-    std::shared_ptr<Image> draw_context_;
-};
-
-bool Init()
-{
-    int error = FT_Init_FreeType(&gFtLibrary);
-    if (error)
-    {
-        std::cerr << "Failed to initialize freetype" << std::endl;
-        return error;
-    }
-    return error == 0;
-}
-
-void Finish()
-{
-    FT_Done_FreeType(gFtLibrary);
-}
-
-void Usage()
-{
-    std::cout
-        << "Usage: clfontpng font1.ttf [font2.ttf ...] text"
-        << std::endl;
-    std::exit(1);
-}
-
-bool ParseArgs(App &app, int argc, char **argv)
-{
-    if (argc < 2)
-        return false;
-    for (int i = 1; i < argc - 1; ++i)
-        app.AddFont(argv[i]);
-    //return app.SetText(argv[argc - 1]);
-    //return app.SetText("🌊");
-    return app.SetText("👧🏽");
-}
-
-bool Start(int argc, char **argv)
-{
-    App app;
-    if (!ParseArgs(app, argc, argv))
-        Usage();
-    return app.Execute();
+    return codepoints;
 }
 
 } // namespace
 
 int main(int argc, char **argv)
 {
-    if (!Init())
+    int error = FT_Init_FreeType(&gFtLibrary);
+    if (error)
+    {
+        std::cerr << "Failed to initialize freetype" << std::endl;
         std::exit(1);
-    bool success = Start(argc, argv);
-    Finish();
+    }
+
+    if (argc < 2)
+    {
+        std::cout
+            << "Usage: clfontpng font1.ttf [font2.ttf ...] text"
+            << std::endl;
+        std::exit(2);
+    }
+
+    FontList font_list_;
+    for (int i = 1; i < argc - 1; ++i)
+    {
+        font_list_.AddFont(argv[i]);
+    }
+
+    auto codepoints = UTF8ToCodepoint("👧🏽");
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+    for (auto c : codepoints)
+    {
+        font_list_.CalculateBox(c, width, height);
+    }
+
+    auto image = Image::Create(width, height);
+    for (auto c : codepoints)
+    {
+        font_list_.DrawCodepoint(image, c);
+    }
+    auto success = image->Output();
+
+    FT_Done_FreeType(gFtLibrary);
     return success ? 0 : 1;
 }
