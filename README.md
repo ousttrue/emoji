@@ -14,7 +14,7 @@ vcvarsall.bat
 
 ## usage
 
-Windowsでは、コマンドラインからUTF8文字列を渡すことができなかったのでコードポイントを16進数で指定することにした。
+WindowsではコマンドラインからUTF8文字列を渡すことができなかったので、コードポイントを16進数で指定することにした。
 
 ```
 > emoji.exe NotoColorEmoji.ttf 1F6000
