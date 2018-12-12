@@ -266,6 +266,11 @@ class FT
         faces_.push_back(CreateFont(ft_, fontfile, pixel_size));
     }
 
+    std::shared_ptr<Image> RenderToImage(uint32_t codepoint)
+    {
+        return RenderToImage(&codepoint, 1);
+    }
+
     std::shared_ptr<Image> RenderToImage(const uint32_t *codepoints, size_t count)
     {
         static const uint32_t kSpace = 0x20;
@@ -316,6 +321,15 @@ class FT
     }
 };
 
+static uint32_t HexToInt(const std::string &src)
+{
+    std::stringstream ss;
+    ss << std::hex << src;
+    uint32_t codepoint;
+    ss >> codepoint;
+    return codepoint;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2)
@@ -333,12 +347,7 @@ int main(int argc, char **argv)
         ft.AddFont(argv[i], kDefaultPixelSize);
     }
 
-    uint32_t codepoint;
-    std::stringstream ss;
-    ss << std::hex << argv[i];
-    ss >> codepoint;
-
-    auto image = ft.RenderToImage(&codepoint, 1);
+    auto image = ft.RenderToImage(HexToInt(argv[i]));
     image->WritePPM("out.ppm");
 
     return 0;
