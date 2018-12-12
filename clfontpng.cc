@@ -1,9 +1,4 @@
-// = Requirements: freetype 2.5, libpng, libicu, libz, libzip2
-// = How to compile:
-//  % export CXXFLAGS=`pkg-config --cflags freetype2 libpng`
-//  % export LDFLAGS=`pkg-config --libs freetype2 libpng`
-//  % clang++ -o clfontpng -static $(CXXFLAGS) clfontpng.cc $(LDFLAGS) \
-//    -licuuc -lz -lbz2
+// = Requirements: freetype 2.5
 #include <cassert>
 #include <cctype>
 #include <iostream>
@@ -18,49 +13,35 @@
 #include FT_FREETYPE_H
 #include FT_TRUETYPE_TABLES_H
 
-namespace
-{
-
 const int kBytesPerPixel = 4; // RGBA
 const int kDefaultPixelSize = 128;
-const int kSpaceWidth = kDefaultPixelSize / 2;
 
 class Image
 {
-    uint32_t pos_ = 0;
     uint32_t width_ = 0;
     uint32_t height_ = 0;
     std::vector<uint8_t> bitmap_;
 
+  public:
     Image(int w, int h)
         : width_(w), height_(h), bitmap_(w * h * kBytesPerPixel)
     {
-    }
-
-  public:
-    static std::shared_ptr<Image> Create(int w, int h)
-    {
-        return std::shared_ptr<Image>(new Image(w, h));
     }
 
     uint8_t *Bitmap() { return &bitmap_[0]; }
     const uint32_t Width() const { return width_; }
     const uint32_t Height() const { return height_; }
 
-    bool DrawBitmap(FT_GlyphSlot slot)
+    uint8_t *GetDrawPosition(int x, int row)
     {
-        int pixel_mode = slot->bitmap.pixel_mode;
-        if (pixel_mode == FT_PIXEL_MODE_BGRA)
-            DrawColorBitmap(slot);
-        else
-            DrawNormalBitmap(slot);
-        Advance(slot->advance.x >> 6);
-        return true;
+        uint32_t index = (row * width_ + x) * kBytesPerPixel;
+        assert(index < bitmap_.size());
+        return &bitmap_[index];
     }
 
-    bool Output()
+    bool Output(const std::string &path)
     {
-        std::ofstream io("out.ppm", std::ios::binary);
+        std::ofstream io(path, std::ios::binary);
         io << "P6\n";
         io << Width() << " " << Height() << "\n";
         io << "255\n";
@@ -76,52 +57,6 @@ class Image
 
         return true;
     }
-
-  private:
-    uint8_t *GetDrawPosition(int row)
-    {
-        uint32_t index = (row * width_ + pos_) * kBytesPerPixel;
-        assert(index < bitmap_.size());
-        return &bitmap_[index];
-    }
-
-    void DrawColorBitmap(FT_GlyphSlot slot)
-    {
-        uint8_t *src = slot->bitmap.buffer;
-        // FIXME: Should use metrics for drawing. (e.g. calculate baseline)
-        int yoffset = Height() - slot->bitmap.rows;
-        for (uint32_t y = 0; y < slot->bitmap.rows; ++y)
-        {
-            uint8_t *dest = GetDrawPosition(y + yoffset);
-            for (uint32_t x = 0; x < slot->bitmap.width; ++x)
-            {
-                uint8_t b = *src++, g = *src++, r = *src++, a = *src++;
-                *dest++ = r;
-                *dest++ = g;
-                *dest++ = b;
-                *dest++ = a;
-            }
-        }
-    }
-    void DrawNormalBitmap(FT_GlyphSlot slot)
-    {
-        uint8_t *src = slot->bitmap.buffer;
-        // FIXME: Same as DrawColorBitmap()
-        int yoffset = Height() - slot->bitmap.rows;
-        for (uint32_t y = 0; y < slot->bitmap.rows; ++y)
-        {
-            uint8_t *dest = GetDrawPosition(y + yoffset);
-            for (uint32_t x = 0; x < slot->bitmap.width; ++x)
-            {
-                *dest++ = 255 - *src;
-                *dest++ = 255 - *src;
-                *dest++ = 255 - *src;
-                *dest++ = *src; // Alpha
-                ++src;
-            }
-        }
-    }
-    void Advance(int dx) { pos_ += dx; }
 };
 
 struct Size
@@ -177,6 +112,8 @@ class FontBase
 
         return true;
     }
+
+    virtual int Draw(const std::shared_ptr<Image> &image, int x) = 0;
 };
 
 class EmojiFont : public FontBase
@@ -202,17 +139,61 @@ class EmojiFont : public FontBase
 
         FT_Select_Size(face_, best_match);
     }
+
+    int Draw(const std::shared_ptr<Image> &image, int x) override
+    {
+        auto slot = face_->glyph;
+        int pixel_mode = slot->bitmap.pixel_mode;
+        assert(pixel_mode == FT_PIXEL_MODE_BGRA);
+        auto src = slot->bitmap.buffer;
+        // FIXME: Should use metrics for drawing. (e.g. calculate baseline)
+        int yoffset = image->Height() - slot->bitmap.rows;
+        for (uint32_t y = 0; y < slot->bitmap.rows; ++y)
+        {
+            auto dest = image->GetDrawPosition(x, y + yoffset);
+            for (uint32_t x = 0; x < slot->bitmap.width; ++x)
+            {
+                uint8_t b = *src++, g = *src++, r = *src++, a = *src++;
+                *dest++ = r;
+                *dest++ = g;
+                *dest++ = b;
+                *dest++ = a;
+            }
+        }
+        return slot->advance.x >> 6;
+    }
 };
 
 class NormalFont : public FontBase
 {
-    FT_Face face_;
-
   public:
     NormalFont(FT_Face face, int pixel_size)
         : FontBase(face)
     {
         FT_Set_Pixel_Sizes(face_, 0, pixel_size);
+    }
+
+    int Draw(const std::shared_ptr<Image> &image, int x) override
+    {
+        auto slot = face_->glyph;
+        int pixel_mode = slot->bitmap.pixel_mode;
+        assert(pixel_mode != FT_PIXEL_MODE_BGRA);
+        auto src = slot->bitmap.buffer;
+        // FIXME: Same as DrawColorBitmap()
+        int yoffset = image->Height() - slot->bitmap.rows;
+        for (uint32_t y = 0; y < slot->bitmap.rows; ++y)
+        {
+            uint8_t *dest = image->GetDrawPosition(x, y + yoffset);
+            for (uint32_t x = 0; x < slot->bitmap.width; ++x)
+            {
+                *dest++ = 255 - *src;
+                *dest++ = 255 - *src;
+                *dest++ = 255 - *src;
+                *dest++ = *src; // Alpha
+                ++src;
+            }
+        }
+        return slot->advance.x >> 6;
     }
 };
 
@@ -224,7 +205,7 @@ static bool IsColorEmojiFont(FT_Face face)
     return length != 0;
 }
 
-static std::shared_ptr<FontBase> CreateFont(FT_Library ft, const std::string &font_file)
+static std::shared_ptr<FontBase> CreateFont(FT_Library ft, const std::string &font_file, int pixel_size)
 {
     FT_Face face;
     auto error = FT_New_Face(ft, font_file.c_str(), 0, &face);
@@ -240,11 +221,11 @@ static std::shared_ptr<FontBase> CreateFont(FT_Library ft, const std::string &fo
             return nullptr;
         }
 
-        return std::shared_ptr<FontBase>(new EmojiFont(face, kDefaultPixelSize));
+        return std::shared_ptr<FontBase>(new EmojiFont(face, pixel_size));
     }
     else
     {
-        return std::shared_ptr<FontBase>(new NormalFont(face, kDefaultPixelSize));
+        return std::shared_ptr<FontBase>(new NormalFont(face, pixel_size));
     }
 }
 
@@ -268,22 +249,12 @@ static std::vector<uint32_t> UTF8ToCodepoint(const std::string &_text)
     return codepoints;
 }
 
-} // namespace
-
 class FT
 {
   public:
     FT_Library ft_ = nullptr;
-
-    FT()
-    {
-        FT_Init_FreeType(&ft_);
-    }
-
-    ~FT()
-    {
-        FT_Done_FreeType(ft_);
-    }
+    FT() { FT_Init_FreeType(&ft_); }
+    ~FT() { FT_Done_FreeType(ft_); }
 };
 
 int main(int argc, char **argv)
@@ -300,11 +271,12 @@ int main(int argc, char **argv)
     std::vector<std::shared_ptr<FontBase>> faces;
     for (int i = 1; i < argc - 1; ++i)
     {
-        faces.push_back(CreateFont(ft.ft_, argv[i]));
+        faces.push_back(CreateFont(ft.ft_, argv[i], kDefaultPixelSize));
     }
 
     auto codepoints = UTF8ToCodepoint("👧🏽");
 
+    const int kSpaceWidth = kDefaultPixelSize / 2;
     uint32_t width = 0;
     uint32_t height = 0;
     for (auto codepoint : codepoints)
@@ -328,22 +300,20 @@ int main(int argc, char **argv)
         }
     }
 
-    auto image = Image::Create(width, height);
+    auto image = std::make_shared<Image>(width, height);
+    int x = 0;
     for (auto codepoint : codepoints)
     {
         for (auto &face : faces)
         {
             if (face->RenderGlyph(codepoint))
             {
-                if (!image->DrawBitmap(face->GetGlyph()))
-                {
-                    return 3;
-                }
+                x += face->Draw(image, x);
             }
         }
         std::cerr << "Missing glyph for codepoint: " << codepoint << std::endl;
     }
-    auto success = image->Output();
+    auto success = image->Output("out.ppm");
 
     return success ? 0 : 1;
 }
