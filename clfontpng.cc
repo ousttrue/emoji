@@ -12,23 +12,15 @@
 #include <string>
 #include <algorithm>
 #include <fstream>
-
 #include <stdio.h>
-
-#include <unicode/umachine.h>
 #include <unicode/utf.h>
-
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_TRUETYPE_TABLES_H
 
-#define PNG_SKIP_SETJMP_CHECK
-#include <png.h>
-
 namespace
 {
 
-const char *kDefaultOutputFile = "out.png";
 const int kBytesPerPixel = 4; // RGBA
 const int kDefaultPixelSize = 128;
 const int kSpaceWidth = kDefaultPixelSize / 2;
