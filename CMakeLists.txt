@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.0)
 project(emoji)
 
 LINK_DIRECTORIES(C:/vcpkg/installed/x64-windows/lib)
-file(GLOB SRC main.cpp)
+file(GLOB SRC *.cpp *.h)
 add_executable(${PROJECT_NAME} ${SRC})
 TARGET_INCLUDE_DIRECTORIES(${PROJECT_NAME} PUBLIC
     C:/vcpkg/installed/x64-windows/include
