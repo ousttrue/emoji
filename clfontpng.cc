@@ -33,8 +33,6 @@ const int kBytesPerPixel = 4; // RGBA
 const int kDefaultPixelSize = 128;
 const int kSpaceWidth = kDefaultPixelSize / 2;
 
-FT_Library gFtLibrary;
-
 class Image
 {
     uint32_t pos_ = 0;
@@ -144,7 +142,7 @@ class FreeTypeFace
     int error_;
 
   public:
-    FreeTypeFace(const std::string &font_file)
+    FreeTypeFace(FT_Library gFtLibrary, const std::string &font_file)
         : font_file_(font_file)
     {
         error_ = FT_New_Face(gFtLibrary, font_file_.c_str(), 0, &face_);
@@ -239,50 +237,6 @@ class FreeTypeFace
     }
 };
 
-class FontList
-{
-    typedef std::vector<std::unique_ptr<FreeTypeFace>> FaceList;
-
-  public:
-    FontList() {}
-
-    void AddFont(const std::string &font_file)
-    {
-        auto face = std::unique_ptr<FreeTypeFace>(new FreeTypeFace(font_file));
-        face_list_.push_back(std::move(face));
-    }
-    void CalculateBox(uint32_t codepoint, uint32_t &width, uint32_t &height)
-    {
-        static const uint32_t kSpace = 0x20;
-        if (codepoint == kSpace)
-        {
-            width += kSpaceWidth;
-        }
-        else
-        {
-            for (auto &face : face_list_)
-            {
-                if (face->CalculateBox(codepoint, width, height))
-                    return;
-            }
-        }
-    }
-    void DrawCodepoint(std::shared_ptr<Image> &context, uint32_t codepoint)
-    {
-        for (auto &face : face_list_)
-        {
-            if (face->DrawCodepoint(context, codepoint))
-                return;
-        }
-        std::cerr << "Missing glyph for codepoint: " << codepoint << std::endl;
-    }
-
-  private:
-    FontList(const FontList &) = delete;
-    FontList &operator=(const FontList &) = delete;
-    FaceList face_list_;
-};
-
 static std::vector<uint32_t> UTF8ToCodepoint(const std::string &_text)
 {
     std::vector<uint32_t> codepoints;
@@ -305,15 +259,24 @@ static std::vector<uint32_t> UTF8ToCodepoint(const std::string &_text)
 
 } // namespace
 
-int main(int argc, char **argv)
+class FT
 {
-    int error = FT_Init_FreeType(&gFtLibrary);
-    if (error)
+  public:
+    FT_Library gFtLibrary = nullptr;
+
+    FT()
     {
-        std::cerr << "Failed to initialize freetype" << std::endl;
-        std::exit(1);
+        FT_Init_FreeType(&gFtLibrary);
     }
 
+    ~FT()
+    {
+        FT_Done_FreeType(gFtLibrary);
+    }
+};
+
+int main(int argc, char **argv)
+{
     if (argc < 2)
     {
         std::cout
@@ -322,28 +285,51 @@ int main(int argc, char **argv)
         std::exit(2);
     }
 
-    FontList font_list_;
+    FT ft;
+    std::vector<std::shared_ptr<FreeTypeFace>> faces;
     for (int i = 1; i < argc - 1; ++i)
     {
-        font_list_.AddFont(argv[i]);
+        faces.push_back(std::shared_ptr<FreeTypeFace>(
+            new FreeTypeFace(ft.gFtLibrary, argv[i])));
     }
 
     auto codepoints = UTF8ToCodepoint("👧🏽");
 
     uint32_t width = 0;
     uint32_t height = 0;
-    for (auto c : codepoints)
+    for (auto codepoint : codepoints)
     {
-        font_list_.CalculateBox(c, width, height);
+        static const uint32_t kSpace = 0x20;
+        if (codepoint == kSpace)
+        {
+            width += kSpaceWidth;
+        }
+        else
+        {
+            for (auto &face : faces)
+            {
+                if (face->CalculateBox(codepoint, width, height))
+                {
+                    break;
+                }
+            }
+        }
     }
+    std::cout << width << "x" << height << std::endl;
 
     auto image = Image::Create(width, height);
-    for (auto c : codepoints)
+    for (auto codepoint : codepoints)
     {
-        font_list_.DrawCodepoint(image, c);
+        for (auto &face : faces)
+        {
+            if (face->DrawCodepoint(image, codepoint))
+            {
+                break;
+            }
+        }
+        std::cerr << "Missing glyph for codepoint: " << codepoint << std::endl;
     }
     auto success = image->Output();
 
-    FT_Done_FreeType(gFtLibrary);
     return success ? 0 : 1;
 }
