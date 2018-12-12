@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cctype>
 #include <iostream>
+#include <sstream>
 #include <memory>
 #include <vector>
 #include <string>
@@ -39,7 +40,7 @@ class Image
         return &bitmap_[index];
     }
 
-    bool Output(const std::string &path)
+    void WritePPM(const std::string &path)
     {
         std::ofstream io(path, std::ios::binary);
         io << "P6\n";
@@ -54,8 +55,6 @@ class Image
                 io.write(p, 3);
             }
         }
-
-        return true;
     }
 };
 
@@ -251,10 +250,70 @@ static std::vector<uint32_t> UTF8ToCodepoint(const std::string &_text)
 
 class FT
 {
-  public:
     FT_Library ft_ = nullptr;
+    std::vector<std::shared_ptr<FontBase>> faces_;
+
+  public:
     FT() { FT_Init_FreeType(&ft_); }
-    ~FT() { FT_Done_FreeType(ft_); }
+    ~FT()
+    {
+        faces_.clear();
+        FT_Done_FreeType(ft_);
+    }
+
+    void AddFont(const std::string &fontfile, int pixel_size)
+    {
+        faces_.push_back(CreateFont(ft_, fontfile, pixel_size));
+    }
+
+    std::shared_ptr<Image> RenderToImage(const uint32_t *codepoints, size_t count)
+    {
+        static const uint32_t kSpace = 0x20;
+        const int kSpaceWidth = kDefaultPixelSize / 2;
+
+        uint32_t width = 0;
+        uint32_t height = 0;
+        for (int i = 0; i < count; ++i)
+        {
+            auto codepoint = codepoints[i];
+            if (codepoint == kSpace)
+            {
+                width += kSpaceWidth;
+            }
+            else
+            {
+                for (auto &face : faces_)
+                {
+                    // try all fonts
+                    if (face->RenderGlyph(codepoint))
+                    {
+                        auto size = face->GetGlyphSize();
+                        width += size.width;
+                        height = std::max(height, size.height);
+                        break;
+                    }
+                }
+            }
+        }
+
+        auto image = std::make_shared<Image>(width, height);
+        int x = 0;
+        for (int i = 0; i < count; ++i)
+        {
+            auto codepoint = codepoints[i];
+            for (auto &face : faces_)
+            {
+                // try all fonts
+                if (face->RenderGlyph(codepoint))
+                {
+                    x += face->Draw(image, x);
+                    break;
+                }
+            }
+        }
+
+        return image;
+    }
 };
 
 int main(int argc, char **argv)
@@ -262,58 +321,25 @@ int main(int argc, char **argv)
     if (argc < 2)
     {
         std::cout
-            << "Usage: clfontpng font1.ttf [font2.ttf ...] text"
-            << std::endl;
+            << "Usage: emoji font1.ttf [font2.ttf ...] codepoint" << std::endl
+            << "Example: emoji font1.ttf [font2.ttf ...] 1F600" << std::endl;
         std::exit(2);
     }
 
     FT ft;
-    std::vector<std::shared_ptr<FontBase>> faces;
-    for (int i = 1; i < argc - 1; ++i)
+    int i = 1;
+    for (; i < argc - 1; ++i)
     {
-        faces.push_back(CreateFont(ft.ft_, argv[i], kDefaultPixelSize));
+        ft.AddFont(argv[i], kDefaultPixelSize);
     }
 
-    auto codepoints = UTF8ToCodepoint("👧🏽");
+    uint32_t codepoint;
+    std::stringstream ss;
+    ss << std::hex << argv[i];
+    ss >> codepoint;
 
-    const int kSpaceWidth = kDefaultPixelSize / 2;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    for (auto codepoint : codepoints)
-    {
-        static const uint32_t kSpace = 0x20;
-        if (codepoint == kSpace)
-        {
-            width += kSpaceWidth;
-        }
-        else
-        {
-            for (auto &face : faces)
-            {
-                if (face->RenderGlyph(codepoint))
-                {
-                    auto size = face->GetGlyphSize();
-                    width += size.width;
-                    height = std::max(height, size.height);
-                }
-            }
-        }
-    }
+    auto image = ft.RenderToImage(&codepoint, 1);
+    image->WritePPM("out.ppm");
 
-    auto image = std::make_shared<Image>(width, height);
-    int x = 0;
-    for (auto codepoint : codepoints)
-    {
-        for (auto &face : faces)
-        {
-            if (face->RenderGlyph(codepoint))
-            {
-                x += face->Draw(image, x);
-            }
-        }
-        std::cerr << "Missing glyph for codepoint: " << codepoint << std::endl;
-    }
-    auto success = image->Output("out.ppm");
-
-    return success ? 0 : 1;
+    return 0;
 }

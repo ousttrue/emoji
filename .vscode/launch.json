@@ -8,10 +8,10 @@
             "type": "cppvsdbg",
             "request": "launch",
             "name": "Launch",
-            "program": "${workspaceFolder}/build/clfontpng.exe",
+            "program": "${workspaceFolder}/build/emoji.exe",
             "args": [
                 "NotoColorEmoji.ttf",
-                "🌊"
+                "1F601"
             ],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
