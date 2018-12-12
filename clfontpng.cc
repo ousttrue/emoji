@@ -124,110 +124,129 @@ class Image
     void Advance(int dx) { pos_ += dx; }
 };
 
-class FreeTypeFace
+struct Size
 {
-    std::string font_file_;
-    int pixel_size = kDefaultPixelSize;
-    int load_flags = 0;
-    FT_Render_Mode render_mode = FT_RENDER_MODE_NORMAL;
-    FT_Face face_ = nullptr;
-    int error_;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
+class FontBase
+{
+  protected:
+    int load_flags_ = 0;
+    FT_Face face_;
+    FontBase(FT_Face face) : face_(face) {}
+    ~FontBase()
+    {
+        FT_Done_Face(face_);
+    }
 
   public:
-    FreeTypeFace(FT_Library gFtLibrary, const std::string &font_file)
-        : font_file_(font_file)
+    FT_GlyphSlot GetGlyph()
     {
-        error_ = FT_New_Face(gFtLibrary, font_file_.c_str(), 0, &face_);
-        if (error_)
-        {
-            return;
-        }
-        if (IsColorEmojiFont())
-            SetupColorFont();
-        else
-            SetupNormalFont();
-    }
-    ~FreeTypeFace()
-    {
-        if (face_)
-            FT_Done_Face(face_);
-    }
-    bool CalculateBox(uint32_t codepoint, uint32_t &width, uint32_t &height)
-    {
-        if (!RenderGlyph(codepoint))
-            return false;
-        width += (face_->glyph->advance.x >> 6);
-        height = std::max(
-            height, static_cast<uint32_t>(face_->glyph->metrics.height >> 6));
-        return true;
+        return face_->glyph;
     }
 
-    bool DrawCodepoint(const std::shared_ptr<Image> &context, uint32_t codepoint)
+    Size GetGlyphSize()
     {
-        if (!RenderGlyph(codepoint))
-            return false;
-        //printf("U+%08X -> %s\n", codepoint, font_file_.c_str());
-        return context->DrawBitmap(face_->glyph);
+        Size size;
+        size.width = (face_->glyph->advance.x >> 6);
+        size.height = (face_->glyph->metrics.height >> 6);
+        return size;
     }
-
-    int Error() const { return error_; }
-
-  private:
-    FreeTypeFace(const FreeTypeFace &) = delete;
-    FreeTypeFace &operator=(const FreeTypeFace &) = delete;
 
     bool RenderGlyph(uint32_t codepoint)
     {
-        if (!face_)
-            return false;
-        uint32_t glyph_index = FT_Get_Char_Index(face_, codepoint);
+        auto glyph_index = FT_Get_Char_Index(face_, codepoint);
         if (glyph_index == 0)
+        {
             return false;
-        error_ = FT_Load_Glyph(face_, glyph_index, load_flags);
-        if (error_)
+        }
+
+        auto error = FT_Load_Glyph(face_, glyph_index, load_flags_);
+        if (error)
+        {
             return false;
-        error_ = FT_Render_Glyph(face_->glyph, render_mode);
-        if (error_)
+        }
+
+        error = FT_Render_Glyph(face_->glyph, FT_RENDER_MODE_NORMAL);
+        if (error)
+        {
             return false;
+        }
+
         return true;
     }
-    bool IsColorEmojiFont()
-    {
-        static const uint32_t tag = FT_MAKE_TAG('C', 'B', 'D', 'T');
-        unsigned long length = 0;
-        FT_Load_Sfnt_Table(face_, tag, 0, nullptr, &length);
-        if (length)
-        {
-            std::cout << font_file_ << " is color font" << std::endl;
-            return true;
-        }
-        return false;
-    }
-    void SetupNormalFont()
-    {
-        error_ = FT_Set_Pixel_Sizes(face_, 0, pixel_size);
-    }
-    void SetupColorFont()
-    {
-        load_flags |= FT_LOAD_COLOR;
+};
 
-        if (face_->num_fixed_sizes == 0)
-            return;
+class EmojiFont : public FontBase
+{
+  public:
+    EmojiFont(FT_Face face, int pixel_size)
+        : FontBase(face)
+    {
+        load_flags_ |= FT_LOAD_COLOR;
+        // search nearest font size
         int best_match = 0;
         int diff = std::abs(pixel_size - face_->available_sizes[0].width);
         for (int i = 1; i < face_->num_fixed_sizes; ++i)
         {
-            int ndiff =
+            auto current =
                 std::abs(pixel_size - face_->available_sizes[i].width);
-            if (ndiff < diff)
+            if (current < diff)
             {
                 best_match = i;
-                diff = ndiff;
+                diff = current;
             }
         }
-        error_ = FT_Select_Size(face_, best_match);
+
+        FT_Select_Size(face_, best_match);
     }
 };
+
+class NormalFont : public FontBase
+{
+    FT_Face face_;
+
+  public:
+    NormalFont(FT_Face face, int pixel_size)
+        : FontBase(face)
+    {
+        FT_Set_Pixel_Sizes(face_, 0, pixel_size);
+    }
+};
+
+static bool IsColorEmojiFont(FT_Face face)
+{
+    static const uint32_t tag = FT_MAKE_TAG('C', 'B', 'D', 'T');
+    unsigned long length = 0;
+    FT_Load_Sfnt_Table(face, tag, 0, nullptr, &length);
+    return length != 0;
+}
+
+static std::shared_ptr<FontBase> CreateFont(FT_Library ft, const std::string &font_file)
+{
+    FT_Face face;
+    auto error = FT_New_Face(ft, font_file.c_str(), 0, &face);
+    if (error)
+    {
+        return nullptr;
+    }
+
+    if (IsColorEmojiFont(face))
+    {
+        if (face->num_fixed_sizes == 0)
+        {
+            return nullptr;
+        }
+
+        return std::shared_ptr<FontBase>(new EmojiFont(face, kDefaultPixelSize));
+    }
+    else
+    {
+        return std::shared_ptr<FontBase>(new NormalFont(face, kDefaultPixelSize));
+    }
+}
 
 static std::vector<uint32_t> UTF8ToCodepoint(const std::string &_text)
 {
@@ -254,16 +273,16 @@ static std::vector<uint32_t> UTF8ToCodepoint(const std::string &_text)
 class FT
 {
   public:
-    FT_Library gFtLibrary = nullptr;
+    FT_Library ft_ = nullptr;
 
     FT()
     {
-        FT_Init_FreeType(&gFtLibrary);
+        FT_Init_FreeType(&ft_);
     }
 
     ~FT()
     {
-        FT_Done_FreeType(gFtLibrary);
+        FT_Done_FreeType(ft_);
     }
 };
 
@@ -278,11 +297,10 @@ int main(int argc, char **argv)
     }
 
     FT ft;
-    std::vector<std::shared_ptr<FreeTypeFace>> faces;
+    std::vector<std::shared_ptr<FontBase>> faces;
     for (int i = 1; i < argc - 1; ++i)
     {
-        faces.push_back(std::shared_ptr<FreeTypeFace>(
-            new FreeTypeFace(ft.gFtLibrary, argv[i])));
+        faces.push_back(CreateFont(ft.ft_, argv[i]));
     }
 
     auto codepoints = UTF8ToCodepoint("👧🏽");
@@ -300,23 +318,27 @@ int main(int argc, char **argv)
         {
             for (auto &face : faces)
             {
-                if (face->CalculateBox(codepoint, width, height))
+                if (face->RenderGlyph(codepoint))
                 {
-                    break;
+                    auto size = face->GetGlyphSize();
+                    width += size.width;
+                    height = std::max(height, size.height);
                 }
             }
         }
     }
-    std::cout << width << "x" << height << std::endl;
 
     auto image = Image::Create(width, height);
     for (auto codepoint : codepoints)
     {
         for (auto &face : faces)
         {
-            if (face->DrawCodepoint(image, codepoint))
+            if (face->RenderGlyph(codepoint))
             {
-                break;
+                if (!image->DrawBitmap(face->GetGlyph()))
+                {
+                    return 3;
+                }
             }
         }
         std::cerr << "Missing glyph for codepoint: " << codepoint << std::endl;
